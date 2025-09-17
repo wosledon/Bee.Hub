@@ -1,7 +1,9 @@
 using System;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Bee.Hub.EfCore.Entities
 {
+    [Table("bee_hub_inbox_messages")]
     public class InboxMessage
     {
         public Guid Id { get; set; }

@@ -1,7 +1,9 @@
 using System;
+using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Bee.Hub.EfCore.Entities
 {
+    [Table("bee_hub_outbox_messages")]
     public class OutboxMessage
     {
         public Guid Id { get; set; }
