@@ -69,6 +69,22 @@ namespace Bee.Hub.EfCore.Stores
             }
         }
 
+        public async Task IncrementAttemptBatchAsync(IEnumerable<Guid> ids, CancellationToken cancellationToken = default)
+        {
+            var idList = ids.ToList();
+            if (!idList.Any()) return;
+
+            var items = await _db.Outbox.Where(o => idList.Contains(o.Id)).ToListAsync(cancellationToken);
+            var now = DateTime.UtcNow;
+            foreach (var it in items)
+            {
+                it.AttemptCount = it.AttemptCount + 1;
+                it.LastAttemptAt = now;
+            }
+
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+
         public async Task MarkDeadLetterBatchAsync(IEnumerable<Guid> ids, string reason, CancellationToken cancellationToken = default)
         {
             var idList = ids.ToList();
@@ -79,6 +95,26 @@ namespace Bee.Hub.EfCore.Stores
             {
                 it.Status = "DeadLetter";
                 it.TransportMetadata = reason;
+            }
+
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+
+        public async Task MarkDeadLetterBatchAsync(System.Collections.Generic.IEnumerable<System.ValueTuple<Guid, string>> items, CancellationToken cancellationToken = default)
+        {
+            var list = items.ToList();
+            if (!list.Any()) return;
+
+            var ids = list.Select(x => x.Item1).ToList();
+            var entities = await _db.Outbox.Where(o => ids.Contains(o.Id)).ToListAsync(cancellationToken);
+            var map = list.ToDictionary(x => x.Item1, x => x.Item2);
+            foreach (var e in entities)
+            {
+                if (map.TryGetValue(e.Id, out var md))
+                {
+                    e.Status = "DeadLetter";
+                    e.TransportMetadata = md;
+                }
             }
 
             await _db.SaveChangesAsync(cancellationToken);

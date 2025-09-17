@@ -17,7 +17,10 @@ namespace Bee.Hub.EfCore.Stores
         Task MarkDeadLetterAsync(Guid id, string reason, CancellationToken cancellationToken = default);
         // Increment attempt count and set LastAttemptAt
         Task IncrementAttemptAsync(Guid id, CancellationToken cancellationToken = default);
-        Task MarkDeadLetterBatchAsync(IEnumerable<Guid> ids, string reason, CancellationToken cancellationToken = default);
+    Task IncrementAttemptBatchAsync(IEnumerable<Guid> ids, CancellationToken cancellationToken = default);
+    Task MarkDeadLetterBatchAsync(IEnumerable<Guid> ids, string reason, CancellationToken cancellationToken = default);
+    // Per-message deadletter metadata (metadataJson should be a serialized DeadLetterInfo)
+    Task MarkDeadLetterBatchAsync(System.Collections.Generic.IEnumerable<System.ValueTuple<Guid, string>> items, CancellationToken cancellationToken = default);
         Task MarkSentBatchAsync(IEnumerable<Guid> ids, CancellationToken cancellationToken = default);
     }
 }

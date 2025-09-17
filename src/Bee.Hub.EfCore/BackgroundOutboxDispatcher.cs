@@ -50,6 +50,8 @@ namespace Bee.Hub.EfCore
 
                 var sentIds = new System.Collections.Generic.List<Guid>();
                 var deadLetterIds = new System.Collections.Generic.List<Guid>();
+                var deadLetterItems = new System.Collections.Generic.List<System.ValueTuple<Guid, string>>();
+                var attemptIncrementIds = new System.Collections.Generic.List<Guid>();
                 foreach (var msg in batch)
                 {
                     try
@@ -65,11 +67,33 @@ namespace Bee.Hub.EfCore
                         if (msg.AttemptCount + 1 >= _options.MaxRetryAttempts)
                         {
                             deadLetterIds.Add(msg.Id);
+                            // prepare per-message deadletter metadata
+                            var serializer = scope.ServiceProvider.GetService<IMessageSerializer>();
+                            string json;
+                            var info = new DeadLetterInfo
+                            {
+                                Reason = ex.Message,
+                                ExceptionType = ex.GetType().FullName,
+                                ExceptionMessage = ex.Message,
+                                StackTrace = ex.StackTrace,
+                                OccurredAt = DateTime.UtcNow
+                            };
+                            if (serializer != null)
+                            {
+                                var bytes = serializer.Serialize(info);
+                                json = Convert.ToBase64String(bytes);
+                            }
+                            else
+                            {
+                                json = System.Text.Json.JsonSerializer.Serialize(info);
+                            }
+
+                            deadLetterItems.Add((msg.Id, json));
                         }
                         else
                         {
-                            // increment attempt metadata via store (single-row update)
-                            await _outboxStore.IncrementAttemptAsync(msg.Id, cancellationToken);
+                            // collect for batch increment
+                            attemptIncrementIds.Add(msg.Id);
                         }
                     }
                 }
@@ -78,6 +102,12 @@ namespace Bee.Hub.EfCore
                 if (sentIds.Any())
                 {
                     await _outboxStore.MarkSentBatchAsync(sentIds, cancellationToken);
+                }
+
+                // batch increment attempts
+                if (attemptIncrementIds.Any())
+                {
+                    await _outboxStore.IncrementAttemptBatchAsync(attemptIncrementIds, cancellationToken);
                 }
 
                 if (deadLetterIds.Any())
