@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Bee.Hub.AspNetCore/Bee.Hub.AspNetCore.csproj" />
     <Project Path="src/Bee.Hub.Core/Bee.Hub.Core.csproj" />
+    <Project Path="src/Bee.Hub.EfCore/Bee.Hub.EfCore.csproj" />
     <Project Path="src/Bee.Hub.InMemory/Bee.Hub.InMemory.csproj" />
     <Project Path="src/Bee.Hub.Kafka/Bee.Hub.Kafka.csproj" />
     <Project Path="src/Bee.Hub.RabbitMQ/Bee.Hub.RabbitMQ.csproj" />

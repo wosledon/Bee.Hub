@@ -132,6 +132,106 @@ SignalR 转发（伪）：
 
 // 在消息处理管道中加入中间件，将事件广播到指定 SignalR 群组。
 
+## Bee.Hub.EfCore
+
+目标：提供一个基于 Entity Framework Core 的持久化扩展，用于将消息持久化到关系型数据库，支持 Outbox/Inbox 模式以保证跨服务事务一致性，并为消息查询、审计和补偿流程提供一套通用的数据模型与查询 API。
+
+主要职责：
+- 持久化发布事件（Outbox）以保证在事务提交时可靠地把消息写入本地数据库并在稍后异步投递到传输层。
+- 接收端的去重（Inbox）与幂等处理支持，避免重复消费。
+- 提供按属性/时间/状态查询消息的能力（用于审计、补偿、重发或手动处理）。
+- 管理消息的送达状态、重试元数据与死信（DLQ）标记。
+
+数据模型建议：
+- OutboxMessage
+	- Id (GUID, PK)
+	- MessageType (string)
+	- Payload (byte[] 或 string)
+	- Headers (JSON 文本)
+	- CreatedAt (UTC datetime)
+	- AvailableAt (UTC datetime) — 支持延迟投递
+	- AttemptCount (int)
+	- LastAttemptAt (UTC datetime?)
+	- Status (enum: Pending, Sent, Failed, DeadLetter)
+	- TransportMetadata (JSON 文本) — 可选，保存传输相关字段
+
+- InboxMessage
+	- Id (GUID, PK) — 可选：或以消息原始 ID 为主键
+	- MessageId (string) — 源消息 ID（bh-message-id）
+	- MessageType (string)
+	- ReceivedAt (UTC datetime)
+	- ProcessedAt (UTC datetime?)
+	- Handler (string?) — 处理该消息的处理器标识
+	- Status (enum: Received, Processed, Failed)
+
+设计要点：
+- Outbox Pattern：在处理应用程序本地业务事务时，将要发布的消息先保存到 Outbox 表中（与业务数据同一事务），然后运行一个后台投递器（BackgroundDispatcher）异步读取 Pending 状态的 OutboxMessage，调用 ITransport.PublishAsync 发布到目标传输，并在成功后将状态标记为 Sent（或删除记录，视策略而定）。
+- Inbox 去重：在消费者端处理消息前，先写入 Inbox 表（或者先检测是否存在同一 MessageId 的 Processed 记录），以保证幂等性。若检测到已处理，则跳过处理逻辑。
+- 事务一致性：推荐将 Outbox 写入与业务写入放在同一数据库事务内，确保原子性。对于分布式事务，优先考虑补偿/SAGA 模式而非强一致分布式事务。
+- 重试与 DLQ：OutboxMessage 保存 AttemptCount 与 LastAttemptAt，投递器在调用失败时按重试策略（指数退避）重试，超过阈值将标记为 Failed/DeadLetter 并记录错误元信息以供人工干预或补偿。
+- 可配置序列化：Payload 与 Headers 支持自定义序列化器（JSON / MessagePack / 自定义），在数据库中可选择以 JSON 文本或二进制 blob 存储。
+
+查询与索引：
+- 为高频查询字段建索引：MessageType、Status、AvailableAt、CreatedAt、MessageId。
+- 提供分页查询 API（基于 CreatedAt 或 Id 的游标分页）以便高效导出或批量重发。
+- 支持按时间范围、消息类型、状态筛选并返回聚合信息（例如失败计数、滞留深度）。
+
+迁移与维护：
+- EF Core Migrations：提供示例迁移脚本并在 README 中说明如何在生产环境逐步应用迁移（备份、维护窗口、并发写入考虑）。
+- 清理策略：提供可配置的归档/清理作业，用于删除或归档已 Sent/Processed 很久的消息（按保留期策略）。
+
+性能与调优：
+- 批量读取：投递器应按批次读取 Pending OutboxMessage 并并行投递以提高吞吐。注意并发度以避免数据库与传输端压力。
+- 连接与事务开销：尽量重用 DbContext/连接池并在投递批次中控制事务大小。
+- 表分区：当消息量非常大时，建议使用表分区或按时间/类型分表以减小单表索引压力。
+
+扩展点：
+- 自定义存储：尽管默认以 EF Core 为实现，但接口应允许替换为其他持久化实现（例如直接使用 Dapper、或写入事件存储系统）。
+- 可插拔序列化器：实现 `IMessageSerializer` 并在 `EfCore` 模块中注入使用。
+- 事件追踪：提供审计日志扩展点以接入 OpenTelemetry/LogSink。
+
+示例代码片段（EF Core 实体与 DbContext，示意）：
+
+```csharp
+public class OutboxMessage
+{
+		public Guid Id { get; set; }
+		public string MessageType { get; set; } = null!;
+		public string Payload { get; set; } = null!; // 可为 JSON
+		public string Headers { get; set; } = null!; // JSON
+		public DateTime CreatedAt { get; set; }
+		public DateTime AvailableAt { get; set; }
+		public int AttemptCount { get; set; }
+		public DateTime? LastAttemptAt { get; set; }
+		public string Status { get; set; } = "Pending";
+}
+
+public class BeeHubDbContext : DbContext
+{
+		public DbSet<OutboxMessage> Outbox { get; set; } = null!;
+		public DbSet<InboxMessage> Inbox { get; set; } = null!;
+
+		public BeeHubDbContext(DbContextOptions<BeeHubDbContext> options) : base(options) { }
+
+		protected override void OnModelCreating(ModelBuilder modelBuilder)
+		{
+				modelBuilder.Entity<OutboxMessage>().HasKey(x => x.Id);
+				modelBuilder.Entity<OutboxMessage>().HasIndex(x => new { x.Status, x.AvailableAt });
+				// ...其他映射
+		}
+}
+```
+
+后台投递器（概要）：
+
+- BackgroundOutboxDispatcher 每隔 N 秒拉取一批 Pending 的 OutboxMessage（且 AvailableAt <= now），对每条消息调用注入的 `IHubClient.PublishAsync` 或 `ITransport.PublishAsync`，并根据结果更新 AttemptCount/Status/LastAttemptAt。
+
+测试建议：
+- 单元测试：测试 Outbox 写入逻辑、序列化器插拔、Inbox 去重判断。
+- 集成测试：使用内存或轻量级数据库（SQLite）测试事务一致性与投递流程；使用 Docker 容器结合真实传输（Kafka/RabbitMQ）验证端到端行为。
+
+文档：在 `Bee.Hub.EfCore` 章末添加示例配置与迁移命令，以及常见故障排查（例如锁竞争、长事务导致的投递延迟）。
+
 ## 路线图
 
 - v0.1 — 核心抽象、内存实现、ASP.NET Core 基本集成。
