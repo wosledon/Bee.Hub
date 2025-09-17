@@ -58,6 +58,32 @@ namespace Bee.Hub.EfCore.Stores
             }
         }
 
+        public async Task IncrementAttemptAsync(Guid id, CancellationToken cancellationToken = default)
+        {
+            var e = await _db.Outbox.FindAsync(new object[] { id }, cancellationToken);
+            if (e != null)
+            {
+                e.AttemptCount = e.AttemptCount + 1;
+                e.LastAttemptAt = DateTime.UtcNow;
+                await _db.SaveChangesAsync(cancellationToken);
+            }
+        }
+
+        public async Task MarkDeadLetterBatchAsync(IEnumerable<Guid> ids, string reason, CancellationToken cancellationToken = default)
+        {
+            var idList = ids.ToList();
+            if (!idList.Any()) return;
+
+            var items = await _db.Outbox.Where(o => idList.Contains(o.Id)).ToListAsync(cancellationToken);
+            foreach (var it in items)
+            {
+                it.Status = "DeadLetter";
+                it.TransportMetadata = reason;
+            }
+
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+
         public async Task MarkSentBatchAsync(IEnumerable<Guid> ids, CancellationToken cancellationToken = default)
         {
             var idList = ids.ToList();

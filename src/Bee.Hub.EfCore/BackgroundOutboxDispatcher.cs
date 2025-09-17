@@ -49,6 +49,7 @@ namespace Bee.Hub.EfCore
                 var batch = await _outboxStore.GetPendingBatchAsync(_options.DispatchBatchSize, now, cancellationToken);
 
                 var sentIds = new System.Collections.Generic.List<Guid>();
+                var deadLetterIds = new System.Collections.Generic.List<Guid>();
                 foreach (var msg in batch)
                 {
                     try
@@ -63,14 +64,12 @@ namespace Bee.Hub.EfCore
                         // update attempt count / dead letter via store
                         if (msg.AttemptCount + 1 >= _options.MaxRetryAttempts)
                         {
-                            await _outboxStore.MarkDeadLetterAsync(msg.Id, ex.Message, cancellationToken);
+                            deadLetterIds.Add(msg.Id);
                         }
                         else
                         {
-                            // increment attempt metadata and persist
-                            msg.AttemptCount++;
-                            msg.LastAttemptAt = DateTime.UtcNow;
-                            await _outboxStore.AddAsync(msg, cancellationToken);
+                            // increment attempt metadata via store (single-row update)
+                            await _outboxStore.IncrementAttemptAsync(msg.Id, cancellationToken);
                         }
                     }
                 }
@@ -79,6 +78,12 @@ namespace Bee.Hub.EfCore
                 if (sentIds.Any())
                 {
                     await _outboxStore.MarkSentBatchAsync(sentIds, cancellationToken);
+                }
+
+                if (deadLetterIds.Any())
+                {
+                    // use a batch dead-letter marking to reduce DB writes
+                    await _outboxStore.MarkDeadLetterBatchAsync(deadLetterIds, "MaxRetriesExceeded", cancellationToken);
                 }
             
             }

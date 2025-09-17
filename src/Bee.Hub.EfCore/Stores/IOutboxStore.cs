@@ -15,6 +15,9 @@ namespace Bee.Hub.EfCore.Stores
         Task<IList<OutboxMessage>> GetPendingBatchAsync(int size, DateTime now, CancellationToken cancellationToken = default);
         Task MarkSentAsync(Guid id, CancellationToken cancellationToken = default);
         Task MarkDeadLetterAsync(Guid id, string reason, CancellationToken cancellationToken = default);
+        // Increment attempt count and set LastAttemptAt
+        Task IncrementAttemptAsync(Guid id, CancellationToken cancellationToken = default);
+        Task MarkDeadLetterBatchAsync(IEnumerable<Guid> ids, string reason, CancellationToken cancellationToken = default);
         Task MarkSentBatchAsync(IEnumerable<Guid> ids, CancellationToken cancellationToken = default);
     }
 }
